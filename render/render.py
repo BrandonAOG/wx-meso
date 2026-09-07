@@ -79,7 +79,10 @@ def render_frame(run_iso: str, fhr: int, region: str, param_ids: list[str],
     if synthetic:
         fields = synthetic_fields(fhr, padded(bbox))
     else:
-        fields = load_grib(Path(grib_paths[""]))
+        try:
+            fields = load_grib(Path(grib_paths[""]))
+        except Exception as e:  # noqa: BLE001
+            log.error("f%03d %s: data unreadable: %s", fhr, region, str(e)[:200]); return []
         for tag, path in grib_paths.items():
             if tag and path:
                 try:
@@ -427,7 +430,10 @@ def main():
         futs = [ex.submit(render_frame, run.isoformat(), fhr, region, args.params,
                           p, str(out_dir), args.synthetic) for fhr, region, p in jobs]
         for fut in as_completed(futs):
-            n_done += len(fut.result())
+            try:
+                n_done += len(fut.result())
+            except Exception as e:  # noqa: BLE001
+                log.error("frame failed: %s", str(e)[:200])
             if n_done % 25 == 0:
                 log.info("%d images written", n_done)
     log.info("done: %d images", n_done)

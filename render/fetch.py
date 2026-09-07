@@ -1142,7 +1142,7 @@ def load_grib(path: Path, tag: str = "") -> Fields:
                         tlon, tlat, ridx, rmask, rshape = _regrid_index(lats, lons, MODEL.get("grid_res", 0.05))
                         lat, lon = tlat, tlon
                 if not regular:
-                    v = vals.ravel()[ridx].reshape(rshape); v[rmask] = np.nan; vals = v
+                    v = vals.ravel()[ridx]; v[rmask] = np.nan; vals = v.reshape(rshape)
                 if key not in out:                 # first occurrence wins (e.g. duplicate tp records)
                     out[key] = np.asarray(vals, dtype=float)
             finally:
