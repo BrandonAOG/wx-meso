@@ -81,7 +81,7 @@ jobs:
           path: ~/.local/share/cartopy
           key: natural-earth-50m-v1
       - name: Render ${{ matrix.model }} hours ${{ matrix.chunk }}
-        run: python render/render.py --run ${{ matrix.run }} --hours "${{ matrix.chunk }}" --workers 4
+        run: python render/render.py --run ${{ matrix.run }} --hours "${{ matrix.chunk }}"
       - uses: actions/upload-artifact@v4
         with:
           name: images-${{ matrix.model }}-${{ strategy.job-index }}
