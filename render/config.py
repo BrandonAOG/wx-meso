@@ -31,7 +31,7 @@ MODELS = {
         "resolution": "0.25°",
         "source": "ecmwf_opendata",
         "cycles": [0, 6, 12, 18],      # 06/18 are published with a shorter range; probed at run time
-        "min_age_hours": 7,
+        "min_age_hours": 6.5,
         # open data: 3-hourly to 144 h, 6-hourly to 240 h (00/12); 06/18 stop earlier
         "hours": list(range(0, 241, 6)),
         "probe_max_hours": [240, 144, 90],
@@ -67,7 +67,7 @@ MODELS["gefs"] = {
 
 MODELS["ecens"] = {
     "id": "ecens", "name": "ECMWF ENS", "resolution": "0.25°", "source": "ecmwf_ens", "kind": "ensemble",
-    "cycles": [0, 6, 12, 18], "min_age_hours": 8.5,
+    "cycles": [0, 6, 12, 18], "min_age_hours": 7.5,
     "hours": list(range(0, 241, 6)),
     "probe_max_hours": [240, 144],           # 06/18Z ENS runs are published to 144 h
     "members": ["c00"] + [f"p{i:02d}" for i in range(1, 51)],
@@ -77,7 +77,7 @@ MODELS["ecens"] = {
 }
 
 MODELS["aifsens"] = dict(MODELS["ecens"], id="aifsens", name="ECMWF AIFS ENS", source="ecmwf_aifs_ens",
-                         min_age_hours=8.0, cycles=[0, 6, 12, 18], probe_max_hours=[240],
+                         min_age_hours=7.0, cycles=[0, 6, 12, 18], probe_max_hours=[240, 144],
                          hours=list(range(0, 241, 6)), credit="ECMWF open data AIFS-ENS (CC-BY-4.0)")
 MODELS["aigefs"] = dict(MODELS["gefs"], id="aigefs", name="AI-GEFS", source="aigefs", credit="NOAA/NCEP AIGEFS via NOMADS",
                         min_age_hours=4.0, hours=list(range(0, 241, 6)))
@@ -214,7 +214,7 @@ REGIONS = {
 # Field names the plot functions see are normalised in fetch.py so one plot
 # function serves every model.
 
-_MSLP = [("PRMSL", "mean_sea_level")]
+_MSLP = [("PRMSL", "mean_sea_level"), ("MSLMA", "mean_sea_level")]   # HRRR/NAM publish MSLMA; absent pairs are dropped
 _E_MSLP = [("msl", None)]
 _PTYPE = [("CSNOW", "surface"), ("CICEP", "surface"), ("CFRZR", "surface"), ("CRAIN", "surface")]
 
@@ -241,7 +241,8 @@ PARAMS = {
     },
     "gust": {
         "name": "10 m wind gust", "group": "Surface", "plot": "plot_gust",
-        "fetch": [("GUST", "10_m_above_ground"), ("GUST", "surface")], "spec": None,
+        "fetch": [("GUST", "10_m_above_ground"), ("GUST", "surface"), ("UGRD", "10_m_above_ground"), ("VGRD", "10_m_above_ground"),
+                  ("WIND", "10_m_above_ground"), ("WDIR", "10_m_above_ground")], "spec": None,
     },
     "precip24": {
         "name": "24-hr accumulated precip", "group": "Precipitation", "plot": "plot_precip24",
@@ -368,7 +369,8 @@ PARAMS = {
     # ------------------------------------------------------ surface ---------
     "wind10m": {
         "name": "MSLP & 10 m wind", "group": "Surface", "plot": "plot_wind10m",
-        "fetch": _MSLP + [("UGRD", "10_m_above_ground"), ("VGRD", "10_m_above_ground")],
+        "fetch": _MSLP + [("UGRD", "10_m_above_ground"), ("VGRD", "10_m_above_ground"),
+                          ("WIND", "10_m_above_ground"), ("WDIR", "10_m_above_ground")],   # NBM: speed + direction
         "spec": _E_MSLP + [("10u", None), ("10v", None)],
     },
     # ------------------------------------------------------ diagnostics -----

@@ -43,7 +43,7 @@ ENSEMBLE = MODEL.get("kind") == "ensemble"
 if ENSEMBLE:
     import ensemble  # noqa: E402
 from fetch import Fields  # noqa: E402
-from fetch import (all_fetch_pairs, build_filter_url, crop, download, download_ecmwf, download_ecmwf_ens, download_files, download_geps, download_grouped, ecmwf_pairs, gefs_member_url, load_grib_members, pack_members,
+from fetch import (all_fetch_pairs, available_pairs, build_filter_url, crop, download, download_ecmwf, download_ecmwf_ens, download_files, download_geps, download_grouped, ecmwf_pairs, gefs_member_url, load_grib_members, pack_members,
                    latest_available_run, load_grib, merge, normalise, prev_steps, step_for,
                    synthetic_fields)  # noqa: E402
 
@@ -317,7 +317,10 @@ def main():
             files = {}
             dest = grib_dir / f"grid_f{fhr:03d}.grb2"
             try:
-                download(build_filter_url(run, fhr, pairs, None), dest, session)
+                have = available_pairs(run, fhr, pairs, session)
+                if not have:
+                    raise RuntimeError(f"f{fhr:03d}: none of the requested fields are in this file")
+                download(build_filter_url(run, fhr, have, None), dest, session)
                 files[""] = str(dest)
             except RuntimeError as e:
                 log.error("f%03d: %s", fhr, e); continue
@@ -328,7 +331,10 @@ def main():
                 tag = "_f0" if off == "f0" else f"_m{off}"
                 pdest = grib_dir / f"grid_f{step:03d}{tag}.grb2"
                 try:
-                    download(build_filter_url(run, step, spec["fetch"], None), pdest, session, retries=3)
+                    phave = available_pairs(run, step, spec["fetch"], session)
+                    if not phave:
+                        continue
+                    download(build_filter_url(run, step, phave, None), pdest, session, retries=3)
                     files[tag] = str(pdest)
                 except RuntimeError as e:
                     log.warning("%s", e)

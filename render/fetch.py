@@ -263,6 +263,60 @@ def download_ecmwf(run: dt.datetime, step: int, pairs: set[tuple], dest: Path, r
     raise RuntimeError(f"Failed to download ECMWF step {step}")
 
 
+# grib_filter level names -> the wording NOAA uses inside .idx files
+_IDX_LEVEL = {
+    "surface": "surface", "mean_sea_level": "mean sea level", "2_m_above_ground": "2 m above ground",
+    "10_m_above_ground": "10 m above ground", "entire_atmosphere": "entire atmosphere",
+    "entire_atmosphere_\\(considered_as_a_single_layer\\)": "entire atmosphere (considered as a single layer)",
+    "top_of_atmosphere": "top of atmosphere", "PV=2e-06_(Km^2/kg/s)_surface": "PV=2e-06 (Km^2/kg/s) surface",
+}
+_IDX_CACHE: dict = {}
+
+
+def idx_url_for(run: dt.datetime, fhr: int) -> str | None:
+    ymd, hh = run.strftime("%Y%m%d"), run.strftime("%H")
+    if MODEL["source"] == "nomads_grid":
+        return MODEL["idx"].format(ymd=ymd, hh=hh, fhr=fhr)
+    if MODEL["source"] == "nomads":
+        return NOMADS_IDX.format(ymd=ymd, hh=hh).replace("f000.idx", f"f{fhr:03d}.idx")
+    return None
+
+
+def available_pairs(run: dt.datetime, fhr: int, pairs, session) -> set:
+    """Keep only (VAR, level) pairs that this hour's .idx says are in the file.
+    grib_filter answers HTTP 500 to a request naming anything absent, so this
+    is what makes mixed requests survive across models. Falls back to all pairs
+    if the .idx can't be read."""
+    url = idx_url_for(run, fhr)
+    if not url:
+        return set(pairs)
+    if url not in _IDX_CACHE:
+        try:
+            r = session.get(url, timeout=60)
+            if r.status_code != 200:
+                log.info("idx %s -> HTTP %s; requesting all fields", url.rsplit("/", 1)[-1], r.status_code)
+                return set(pairs)
+            present = set()
+            for line in r.text.splitlines():
+                parts = line.split(":")
+                if len(parts) > 4:
+                    present.add((parts[3], parts[4]))
+            _IDX_CACHE[url] = present
+        except requests.RequestException as e:
+            log.info("idx fetch failed (%s); requesting all fields", str(e)[:60]); return set(pairs)
+    present = _IDX_CACHE[url]
+    keep, dropped = set(), []
+    for var, lev in pairs:
+        lev_txt = _IDX_LEVEL.get(lev, lev.replace("_", " "))
+        if (var, lev_txt) in present:
+            keep.add((var, lev))
+        else:
+            dropped.append(f"{var}@{lev}")
+    if dropped and fhr in (0, 1, 6):
+        log.info("f%03d: not in this model's file, skipped: %s", fhr, " ".join(sorted(dropped)))
+    return keep
+
+
 def grid_filter_url(run: dt.datetime, fhr: int, pairs) -> str:
     """grib_filter URL for the CONUS mesoscale models (HRRR/NAM/NBM): whole grid,
     selected fields only. These grids are Lambert, so no lat/lon subregion."""
@@ -367,6 +421,7 @@ def download_grouped(run: dt.datetime, fhr: int, pairs: set, bbox, dest: Path,
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists() and dest.stat().st_size > 1000:
         return dest
+    pairs = available_pairs(run, fhr, pairs, session)
     groups: dict[str, set] = {}
     for var, lev in pairs:
         groups.setdefault(_group_of(lev), set()).add((var, lev))
@@ -571,7 +626,7 @@ def load_grib_members(path: Path, tag: str = "", bbox=None) -> dict:
                 if tol == "isobaricInhPa":
                     key = f"{name}{int(lev)}"
                 elif tol in ("heightAboveGround", "heightAboveGroundLayer"):
-                    key = HEIGHT_NAMES.get(name, name)
+                    key = height_key(name, lev)
                 else:
                     key = name
                 if ec.codes_get(h, "stepType") == "accum":
@@ -986,6 +1041,21 @@ WMO_NAMES = {"d0c1n8": "tp", "d0c7n6": "cape", "d0c1n11": "snod", "d2c0n0": "lsm
 # Names eccodes gives GFS/ECMWF fields at fixed heights -> the names plots.py uses
 HEIGHT_NAMES = {"2t": "t2m", "10u": "u10", "10v": "v10", "2r": "rh2m", "2d": "d2m", "10si": "si10", "10wdir": "wdir10",
                 "gust": "gust", "10fg": "gust", "i10fg": "gust", "si10": "si10", "wdir10": "wdir10", "wdir": "wdir10", "ws": "si10"}
+# generic names at a fixed height (how unnamed/WMO-mapped fields arrive): (shortName, level) -> key
+HEIGHT_BY_LEVEL = {("u", 10): "u10", ("v", 10): "v10", ("t", 2): "t2m", ("r", 2): "rh2m", ("si", 10): "si10", ("wdir", 10): "wdir10",
+                   ("gust", 10): "gust", ("si10", 10): "si10", ("wdir10", 10): "wdir10"}
+
+
+def height_key(name: str, lev) -> str:
+    try:
+        lv = int(round(float(lev)))
+    except (TypeError, ValueError):
+        lv = None
+    if name in HEIGHT_NAMES:
+        return HEIGHT_NAMES[name]
+    if (name, lv) in HEIGHT_BY_LEVEL:
+        return HEIGHT_BY_LEVEL[(name, lv)]
+    return f"{name}{lv}m" if lv is not None and name in ("u", "v", "t", "r", "q") else name
 
 
 _REGRID_CACHE: dict = {}
@@ -1048,7 +1118,7 @@ def load_grib(path: Path, tag: str = "") -> Fields:
                 elif tol == "potentialVorticity":
                     key = f"{name}_pv"
                 elif tol in ("heightAboveGround", "heightAboveGroundLayer"):
-                    key = HEIGHT_NAMES.get(name, f"{name}{int(lev)}m" if name in ("t", "u", "v", "r", "q") else name)
+                    key = height_key(name, lev)
                 elif tol == "surface" and name in ("t", "u", "v", "q", "r"):
                     key = f"{name}_sfc"
                 else:
