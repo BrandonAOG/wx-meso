@@ -120,8 +120,7 @@ def _probe_url(run: dt.datetime, step: int, session=None) -> str | None:
         # AIFS-ENS publishes control and perturbed members as separate files (-cf / -pf); IFS ENS combines them (-ef)
         return url.replace("-enfo-ef.grib2", "-enfo-cf.grib2") if src == "ecmwf_aifs_ens" else url
     if src == "aigefs":
-        return GEFS_IDX.replace("/gens/prod/gefs.", "/aigefs/prod/aigefs.").format(
-            ymd=run.strftime("%Y%m%d"), hh=run.strftime("%H"), mem=MODEL["members"][-1], fhr=step)
+        return aigefs_url(run, step, MODEL["members"][-1]) + ".idx"
     return None
 
 
@@ -688,6 +687,72 @@ def gefs_member_url(run: dt.datetime, fhr: int, member: str, pairs, bbox) -> str
     return GEFS_FILTER + "?" + urlencode(q, safe="\\()")
 
 
+# ------------------------------------------------------------- AI-GEFS ------
+
+def aigefs_url(run: dt.datetime, fhr: int, member: str) -> str:
+    n = 0 if member == "c00" else int(member[1:])
+    return MODEL["path"].format(ymd=run.strftime("%Y%m%d"), hh=run.strftime("%H"), mem=n, fhr=fhr)
+
+
+def nomads_idx_ranges(idx_url: str, wanted, session, retries: int = 3):
+    """Byte ranges for wanted (VAR, level-text) fields from a NOMADS .idx
+    (lines like  12:3456789:d=2026090718:TMP:850 mb:24 hour fcst:). The last
+    field's length is unknown, so it's fetched to end-of-file."""
+    text = None
+    for attempt in range(retries):
+        try:
+            r = session.get(idx_url, timeout=60)
+            if r.status_code == 200:
+                text = r.text; break
+            if r.status_code == 404:
+                raise RuntimeError(f"404 {idx_url}")
+        except requests.RequestException as e:
+            log.info("idx fetch failed (%d): %s", attempt + 1, str(e)[:80])
+        time.sleep(BACKOFF[min(attempt, len(BACKOFF) - 1)])
+    if text is None:
+        raise RuntimeError(f"idx unavailable: {idx_url}")
+    rows = []
+    for line in text.splitlines():
+        parts = line.split(":")
+        if len(parts) > 5:
+            rows.append((int(parts[1]), parts[3], parts[4]))
+    want = set(wanted); ranges = []
+    for i, (off, var, lev) in enumerate(rows):
+        if (var, lev) in want:
+            end = rows[i + 1][0] if i + 1 < len(rows) else None
+            ranges.append((off, (end - off) if end else None))
+    return ranges
+
+
+def download_aigefs_member(run: dt.datetime, fhr: int, member: str, dest: Path, session) -> Path:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists() and dest.stat().st_size > 1000:
+        return dest
+    url = aigefs_url(run, fhr, member)
+    wanted = [(v, l) for v, l in MODEL["idx_fields"] if not (v == "APCP" and fhr == 0)]
+    ranges = nomads_idx_ranges(url + ".idx", wanted, session)
+    if not ranges:
+        raise RuntimeError(f"no wanted fields in {url}.idx")
+    tmp = dest.with_suffix(".part")
+    with open(tmp, "wb") as out:
+        for off, ln in sorted(ranges):
+            hdr = {"Range": f"bytes={off}-{off + ln - 1}" if ln else f"bytes={off}-"}
+            for attempt in range(4):
+                try:
+                    r = session.get(url, headers=hdr, timeout=120)
+                    if r.status_code in (200, 206):
+                        out.write(r.content); break
+                    if r.status_code == 404:
+                        raise RuntimeError(f"404 {url}")
+                except requests.RequestException as e:
+                    log.info("range fetch failed (%d): %s", attempt + 1, str(e)[:80])
+                time.sleep(BACKOFF[min(attempt, len(BACKOFF) - 1)])
+            else:
+                tmp.unlink(missing_ok=True); raise RuntimeError(f"range download failed: {url}")
+    tmp.rename(dest)
+    return dest
+
+
 # ------------------------------------------------------------- CMC GDPS -----
 # MSC Datamart (2025+ layout): one GRIB2 per field per step, global 0.15° lat-lon.
 #   https://dd.weather.gc.ca/{ymd}/WXO-DD/model_gdps/15km/{hh}/{fhr}/
@@ -825,8 +890,10 @@ _GEPS_TMPL: dict | None = None      # {"file": template with {token}/{fhr}, "sty
 
 GEPS_CLASSIC = {  # generic -> classic Datamart token (GEPS zero-pads levels: ISBL_0500)
     "gh": "HGT_ISBL_{lev:04d}", "t": "TMP_ISBL_{lev:04d}", "u": "UGRD_ISBL_{lev:04d}", "v": "VGRD_ISBL_{lev:04d}",
-    "msl": "PRMSL_MSL_0", "tp": "APCP_SFC_0", "2t": "TMP_TGL_2", "10u": "UGRD_TGL_10", "10v": "VGRD_TGL_10",
+    "msl": "PRMSL_MSL_0", "tp": "APCP_SFC_0", "2t": "TMP_TGL_2m", "10u": "UGRD_TGL_10m", "10v": "VGRD_TGL_10m",
 }
+# alternative spellings to try if the first 404s (near-surface levels vary between MSC products)
+GEPS_ALT = {"2t": ["TMP_TGL_2m", "TMP_TGL_2"], "10u": ["UGRD_TGL_10m", "UGRD_TGL_10"], "10v": ["VGRD_TGL_10m", "VGRD_TGL_10"]}
 
 
 def geps_template(run: dt.datetime, session) -> dict:
@@ -881,18 +948,25 @@ def download_geps(run: dt.datetime, step: int, fields, dest: Path, session: requ
             t = tm["tokens"].get(name)
             if not t:
                 log.warning("GEPS: no token for %s", name); continue
-            token = t.format(lev=int(lev)) if lev is not None else t
-            url = GEPS_DIR.format(ymd=ymd, hh=hh, fhr=step) + tm["file"].format(token=token, fhr=step)
-            for attempt in range(4):
-                try:
-                    r = session.get(url, timeout=300)
-                    if r.status_code == 200 and len(r.content) > 500:
-                        out.write(r.content); got += 1; break
-                    if r.status_code == 404:
-                        log.warning("missing: %s", url.rsplit("/", 1)[-1]); break
-                except requests.RequestException as e:
-                    log.info("GET failed (%d): %s", attempt + 1, str(e)[:80])
-                time.sleep(BACKOFF[min(attempt, len(BACKOFF) - 1)])
+            candidates = GEPS_ALT.get(name, [t]) if tm["style"] == "classic" else [t]
+            done = False
+            for cand in candidates:
+                token = cand.format(lev=int(lev)) if lev is not None else cand
+                url = GEPS_DIR.format(ymd=ymd, hh=hh, fhr=step) + tm["file"].format(token=token, fhr=step)
+                for attempt in range(4):
+                    try:
+                        r = session.get(url, timeout=300)
+                        if r.status_code == 200 and len(r.content) > 500:
+                            out.write(r.content); got += 1; done = True; break
+                        if r.status_code == 404:
+                            break
+                    except requests.RequestException as e:
+                        log.info("GET failed (%d): %s", attempt + 1, str(e)[:80])
+                    time.sleep(BACKOFF[min(attempt, len(BACKOFF) - 1)])
+                if done:
+                    break
+            if not done:
+                log.warning("missing: %s (tried %s)", name, " ".join(candidates))
     if got == 0:
         tmp.unlink(missing_ok=True)
         raise RuntimeError(f"No GEPS fields downloaded for step {step}")
@@ -1081,7 +1155,7 @@ def _regrid_index(lats2d, lons2d, res: float):
     return _REGRID_CACHE[key]
 
 
-def load_grib(path: Path, tag: str = "") -> Fields:
+def load_grib(path: Path, tag: str = "", bbox=None) -> Fields:
     """Read every message in a GRIB file into Fields keyed so that plots can
     tell fields apart unambiguously:
 
@@ -1141,10 +1215,17 @@ def load_grib(path: Path, tag: str = "") -> Fields:
                     else:                                   # Lambert etc.: regrid to lat/lon
                         tlon, tlat, ridx, rmask, rshape = _regrid_index(lats, lons, MODEL.get("grid_res", 0.05))
                         lat, lon = tlat, tlon
+                        if bbox is not None:                # only keep the window this frame needs
+                            b0, b1, c0, c1 = bbox
+                            li = np.where((tlon >= b0) & (tlon <= b1))[0]; la = np.where((tlat >= c0) & (tlat <= c1))[0]
+                            if len(li) > 4 and len(la) > 4:
+                                sub = np.ix_(la, li)
+                                ridx = ridx.reshape(rshape)[sub].ravel(); rmask = rmask.reshape(rshape)[sub].ravel()
+                                rshape = (len(la), len(li)); lat, lon = tlat[la], tlon[li]
                 if not regular:
-                    v = vals.ravel()[ridx]; v[rmask] = np.nan; vals = v.reshape(rshape)
+                    v = vals.ravel()[ridx].astype(np.float32); v[rmask] = np.nan; vals = v.reshape(rshape)
                 if key not in out:                 # first occurrence wins (e.g. duplicate tp records)
-                    out[key] = np.asarray(vals, dtype=float)
+                    out[key] = np.asarray(vals, dtype=np.float32 if not regular else float)
             finally:
                 ec.codes_release(h)
     if lat is None:

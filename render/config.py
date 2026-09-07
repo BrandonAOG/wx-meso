@@ -80,7 +80,11 @@ MODELS["aifsens"] = dict(MODELS["ecens"], id="aifsens", name="ECMWF AIFS ENS", s
                          min_age_hours=7.0, cycles=[0, 6, 12, 18], probe_max_hours=[240, 144],
                          hours=list(range(0, 241, 6)), credit="ECMWF open data AIFS-ENS (CC-BY-4.0)")
 MODELS["aigefs"] = dict(MODELS["gefs"], id="aigefs", name="AI-GEFS", source="aigefs", credit="NOAA/NCEP AIGEFS via NOMADS",
-                        min_age_hours=4.0, hours=list(range(0, 241, 6)))
+                        min_age_hours=4.0, hours=list(range(0, 241, 6)), probe_max_hours=[240, 120],
+                        # NOMADS layout (no grib_filter): fields are byte-ranged out of each member's file via its .idx
+                        path="https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigefs/v1.0/aigefs.{ymd}/{hh}/mem{mem:03d}/model/atmos/grib2/aigefs.t{hh}z.pres.f{fhr:03d}.grib2",
+                        idx_fields=[("PRMSL", "mean sea level"), ("HGT", "500 mb"), ("TMP", "850 mb"), ("TMP", "2 m above ground"),
+                                    ("UGRD", "10 m above ground"), ("VGRD", "10 m above ground"), ("APCP", "surface")])
 
 MODELS["geps"] = {
     "id": "geps", "name": "GEPS", "resolution": "0.5°", "source": "geps", "kind": "ensemble",
@@ -105,7 +109,7 @@ MODELS["hrrr"] = {
     "cycles": list(range(24)), "min_age_hours": 1.75,          # every hourly run; 00/06/12/18 reach 48 h, others 18 h
     "hours": list(range(0, 49, 1)), "probe_max_hours": [48, 18],
     # HRRR's surface file has no 700 mb RH or 200 mb wind (per its .idx), so no rh700 / shear
-    "regions": ["conus", "seast", "gulf", "fl"], "params": [p for p in _MESO_PARAMS if p not in ("rh700", "shear")], "grid_res": 0.03,
+    "regions": ["conus", "seast", "gulf", "fl"], "params": [p for p in _MESO_PARAMS if p not in ("rh700", "shear")], "grid_res": 0.04, "workers": 2,
     "credit": "NOAA/NCEP HRRR via NOMADS",
 }
 MODELS["nam"] = {
@@ -123,7 +127,7 @@ MODELS["namnest"] = {
     "idx": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/nam/prod/nam.{ymd}/nam.t{hh}z.conusnest.hiresf{fhr:02d}.tm00.grib2.idx",
     "cycles": [0, 6, 12, 18], "min_age_hours": 2.5,
     "hours": list(range(0, 61, 1)), "probe_max_hours": [60],
-    "regions": ["conus", "seast", "gulf", "fl"], "params": _MESO_PARAMS, "grid_res": 0.03,
+    "regions": ["conus", "seast", "gulf", "fl"], "params": _MESO_PARAMS, "grid_res": 0.04, "workers": 2,
     "credit": "NOAA/NCEP NAM CONUS nest via NOMADS",
 }
 MODELS["nbm"] = {
@@ -132,7 +136,7 @@ MODELS["nbm"] = {
     "idx": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/blend/prod/blend.{ymd}/{hh}/core/blend.t{hh}z.core.f{fhr:03d}.co.grib2.idx",
     "cycles": [1, 7, 13, 19], "min_age_hours": 1.5,
     "hours": list(range(1, 37, 1)) + list(range(39, 193, 3)), "probe_max_hours": [192, 36],
-    "regions": ["conus", "seast", "gulf", "fl"], "params": ["t2m", "wind10m", "precip6", "gust"], "grid_res": 0.03,
+    "regions": ["conus", "seast", "gulf", "fl"], "params": ["t2m", "wind10m", "precip6", "gust"], "grid_res": 0.04, "workers": 2,
     "credit": "NOAA/NWS National Blend of Models via NOMADS",
 }
 
