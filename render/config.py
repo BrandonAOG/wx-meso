@@ -100,8 +100,10 @@ MODELS["geps"] = {
 # NOAA CONUS models on NOMADS grib_filter. Their grids are Lambert conformal, so
 # fetch.load_grib regrids them to lat/lon on the way in. No subregion (grib_filter
 # only subsets lat/lon grids), so whole-CONUS files are downloaded per hour.
-_MESO_PARAMS = ["mslp_precip", "mslp_ptype", "refc", "precip24", "precip_total", "t2m", "wind10m", "cape", "pwat",
+_MESO_PARAMS = ["mslp_precip", "mslp_ptype", "refc", "precip24", "precip_total", "t2m", "wind10m", "gust", "cape", "pwat",
                 "t850_wind", "rh700", "z500_vort", "z500_mslp", "shear", "steering"]
+# the 3-km models: only products where the resolution earns its cost (upper air comes from NAM 12 km / GFS)
+_HIRES_PARAMS = ["mslp_precip", "mslp_ptype", "refc", "precip24", "precip_total", "t2m", "wind10m", "gust", "cape", "pwat"]
 MODELS["hrrr"] = {
     "id": "hrrr", "name": "HRRR", "resolution": "3 km", "source": "nomads_grid", "kind": "mesoscale",
     "filter": "filter_hrrr_2d.pl", "dir": "/hrrr.{ymd}/conus", "file": "hrrr.t{hh}z.wrfsfcf{fhr:02d}.grib2",
@@ -109,7 +111,7 @@ MODELS["hrrr"] = {
     "cycles": list(range(24)), "min_age_hours": 1.75,          # every hourly run; 00/06/12/18 reach 48 h, others 18 h
     "hours": list(range(0, 49, 1)), "probe_max_hours": [48, 18],
     # HRRR's surface file has no 700 mb RH or 200 mb wind (per its .idx), so no rh700 / shear
-    "regions": ["conus", "seast", "gulf", "fl"], "params": [p for p in _MESO_PARAMS if p not in ("rh700", "shear")], "grid_res": 0.04, "workers": 2,
+    "regions": ["conus", "seast", "gulf", "fl"], "params": _HIRES_PARAMS, "grid_res": 0.05, "workers": 3,
     "credit": "NOAA/NCEP HRRR via NOMADS",
 }
 MODELS["nam"] = {
@@ -127,7 +129,7 @@ MODELS["namnest"] = {
     "idx": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/nam/prod/nam.{ymd}/nam.t{hh}z.conusnest.hiresf{fhr:02d}.tm00.grib2.idx",
     "cycles": [0, 6, 12, 18], "min_age_hours": 2.5,
     "hours": list(range(0, 61, 1)), "probe_max_hours": [60],
-    "regions": ["conus", "seast", "gulf", "fl"], "params": _MESO_PARAMS, "grid_res": 0.04, "workers": 2,
+    "regions": ["conus", "seast", "gulf", "fl"], "params": _HIRES_PARAMS, "grid_res": 0.05, "workers": 3,
     "credit": "NOAA/NCEP NAM CONUS nest via NOMADS",
 }
 MODELS["nbm"] = {
@@ -136,7 +138,7 @@ MODELS["nbm"] = {
     "idx": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/blend/prod/blend.{ymd}/{hh}/core/blend.t{hh}z.core.f{fhr:03d}.co.grib2.idx",
     "cycles": [1, 7, 13, 19], "min_age_hours": 1.5,
     "hours": list(range(1, 37, 1)) + list(range(39, 193, 3)), "probe_max_hours": [192, 36],
-    "regions": ["conus", "seast", "gulf", "fl"], "params": ["t2m", "wind10m", "precip6", "gust"], "grid_res": 0.04, "workers": 2,
+    "regions": ["conus", "seast", "gulf", "fl"], "params": ["t2m", "wind10m", "precip6", "gust"], "grid_res": 0.05, "workers": 3,
     "credit": "NOAA/NWS National Blend of Models via NOMADS",
 }
 

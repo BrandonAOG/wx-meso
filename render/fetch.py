@@ -270,6 +270,7 @@ _IDX_LEVEL = {
     "top_of_atmosphere": "top of atmosphere", "PV=2e-06_(Km^2/kg/s)_surface": "PV=2e-06 (Km^2/kg/s) surface",
 }
 _IDX_CACHE: dict = {}
+_SKIP_LOGGED: set = set()
 
 
 def idx_url_for(run: dt.datetime, fhr: int) -> str | None:
@@ -304,15 +305,19 @@ def available_pairs(run: dt.datetime, fhr: int, pairs, session) -> set:
         except requests.RequestException as e:
             log.info("idx fetch failed (%s); requesting all fields", str(e)[:60]); return set(pairs)
     present = _IDX_CACHE[url]
+    norm = lambda t: t.replace(" (considered as a single layer)", "").strip()
+    present_n = {(v, norm(l)) for v, l in present}
     keep, dropped = set(), []
     for var, lev in pairs:
-        lev_txt = _IDX_LEVEL.get(lev, lev.replace("_", " "))
-        if (var, lev_txt) in present:
+        lev_txt = norm(_IDX_LEVEL.get(lev, lev.replace("_", " ")))
+        if (var, lev_txt) in present_n:
             keep.add((var, lev))
         else:
             dropped.append(f"{var}@{lev}")
-    if dropped and fhr in (0, 1, 6):
-        log.info("f%03d: not in this model's file, skipped: %s", fhr, " ".join(sorted(dropped)))
+    if dropped and (fhr, tuple(sorted(dropped))) not in _SKIP_LOGGED:
+        _SKIP_LOGGED.add((fhr, tuple(sorted(dropped))))
+        if len(_SKIP_LOGGED) <= 6:
+            log.info("f%03d: not in this model's file, skipped: %s", fhr, " ".join(sorted(dropped)))
     return keep
 
 
