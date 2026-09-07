@@ -104,7 +104,8 @@ MODELS["hrrr"] = {
     "idx": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod/hrrr.{ymd}/conus/hrrr.t{hh}z.wrfsfcf{fhr:02d}.grib2.idx",
     "cycles": list(range(24)), "min_age_hours": 1.75,          # every hourly run; 00/06/12/18 reach 48 h, others 18 h
     "hours": list(range(0, 49, 1)), "probe_max_hours": [48, 18],
-    "regions": ["conus", "seast", "gulf", "fl"], "params": _MESO_PARAMS, "grid_res": 0.03,
+    # HRRR's surface file has no 700 mb RH or 200 mb wind (per its .idx), so no rh700 / shear
+    "regions": ["conus", "seast", "gulf", "fl"], "params": [p for p in _MESO_PARAMS if p not in ("rh700", "shear")], "grid_res": 0.03,
     "credit": "NOAA/NCEP HRRR via NOMADS",
 }
 MODELS["nam"] = {
