@@ -102,7 +102,7 @@ MODELS["hrrr"] = {
     "id": "hrrr", "name": "HRRR", "resolution": "3 km", "source": "nomads_grid", "kind": "mesoscale",
     "filter": "filter_hrrr_2d.pl", "dir": "/hrrr.{ymd}/conus", "file": "hrrr.t{hh}z.wrfsfcf{fhr:02d}.grib2",
     "idx": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod/hrrr.{ymd}/conus/hrrr.t{hh}z.wrfsfcf{fhr:02d}.grib2.idx",
-    "cycles": [0, 6, 12, 18], "min_age_hours": 2.0,
+    "cycles": list(range(24)), "min_age_hours": 1.75,          # every hourly run; 00/06/12/18 reach 48 h, others 18 h
     "hours": list(range(0, 49, 1)), "probe_max_hours": [48, 18],
     "regions": ["conus", "seast", "gulf", "fl"], "params": _MESO_PARAMS, "grid_res": 0.03,
     "credit": "NOAA/NCEP HRRR via NOMADS",
