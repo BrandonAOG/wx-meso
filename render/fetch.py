@@ -357,6 +357,29 @@ def build_filter_url(run: dt.datetime, fhr: int, pairs: set[tuple[str, str]],
 
 BACKOFF = [5, 10, 20, 30, 45, 60]
 
+# Circuit breaker: hosts that refuse connections repeatedly (per-IP rate limiting)
+# get marked dead for this process so a slice fails in minutes, not hours.
+_HOST_FAILS: dict = {}
+_DEAD_HOSTS: set = set()
+
+
+def _host(url: str) -> str:
+    return url.split("/")[2] if "//" in url else url
+
+
+def note_conn_failure(url: str):
+    h = _host(url); _HOST_FAILS[h] = _HOST_FAILS.get(h, 0) + 1
+    if _HOST_FAILS[h] >= 3 and h not in _DEAD_HOSTS:
+        _DEAD_HOSTS.add(h); log.error("%s refused %d connections in a row; giving up on it for this job", h, _HOST_FAILS[h])
+
+
+def note_conn_ok(url: str):
+    _HOST_FAILS[_host(url)] = 0
+
+
+def host_dead(url: str) -> bool:
+    return _host(url) in _DEAD_HOSTS
+
 
 def download(url: str, dest: Path, session: requests.Session, retries: int = 6) -> Path:
     """NOMADS returns 500/503 freely when busy; back off progressively."""
@@ -364,8 +387,11 @@ def download(url: str, dest: Path, session: requests.Session, retries: int = 6) 
     if dest.exists() and dest.stat().st_size > 1000:
         return dest
     for attempt in range(retries):
+        if host_dead(url):
+            raise RuntimeError(f"host unreachable: {url}")
         try:
             r = session.get(url, timeout=120)
+            note_conn_ok(url)
             if r.status_code == 200 and len(r.content) > 1000:
                 dest.write_bytes(r.content)
                 return dest
@@ -373,7 +399,8 @@ def download(url: str, dest: Path, session: requests.Session, retries: int = 6) 
                 raise RuntimeError(f"404 {url}")
             log.warning("GET %s -> %s (%d bytes), attempt %d", url[:80], r.status_code, len(r.content), attempt + 1)
         except requests.RequestException as e:
-            log.warning("GET failed (attempt %d): %s", attempt + 1, e)
+            note_conn_failure(url)
+            log.warning("GET failed (attempt %d): %s", attempt + 1, str(e)[:100])
         time.sleep(BACKOFF[min(attempt, len(BACKOFF) - 1)])
     raise RuntimeError(f"Failed to download {url}")
 
@@ -694,9 +721,61 @@ def gefs_member_url(run: dt.datetime, fhr: int, member: str, pairs, bbox) -> str
 
 # ------------------------------------------------------------- AI-GEFS ------
 
-def aigefs_url(run: dt.datetime, fhr: int, member: str) -> str:
+_AIGEFS_TYPES: list | None = None      # file types (pres, sfc, ...) found in a member folder
+_AIGEFS_FIELD_FILE: dict = {}          # (VAR, level) -> file type that carries it
+
+
+def aigefs_url(run: dt.datetime, fhr: int, member: str, ftype: str = "pres") -> str:
     n = 0 if member == "c00" else int(member[1:])
-    return MODEL["path"].format(ymd=run.strftime("%Y%m%d"), hh=run.strftime("%H"), mem=n, fhr=fhr)
+    return MODEL["path"].format(ymd=run.strftime("%Y%m%d"), hh=run.strftime("%H"), mem=n, fhr=fhr).replace(".pres.", f".{ftype}.")
+
+
+def aigefs_file_types(run: dt.datetime, session) -> list:
+    """Distinct file types in a member's grib2 folder, e.g. ['pres', 'sfc']."""
+    global _AIGEFS_TYPES
+    if _AIGEFS_TYPES is not None:
+        return _AIGEFS_TYPES
+    folder = aigefs_url(run, 0, "c00").rsplit("/", 1)[0] + "/"
+    names = [f for f in _listing(session, folder, retries=2, timeout=30) if f.endswith(".grib2")]
+    types = sorted({f.split(".")[2] for f in names if f.count(".") >= 4})
+    log.info("AI-GEFS file types in %s: %s (%d files)", folder, types or "listing unavailable", len(names))
+    _AIGEFS_TYPES = types or ["pres"]
+    return _AIGEFS_TYPES
+
+
+def aigefs_locate_fields(run: dt.datetime, fhr: int, member: str, wanted, session) -> dict:
+    """{file type: [wanted fields found in that type's index]}; logs anything not found anywhere."""
+    if _AIGEFS_FIELD_FILE:
+        out = {}
+        for w in wanted:
+            t = _AIGEFS_FIELD_FILE.get(w)
+            if t:
+                out.setdefault(t, []).append(w)
+        return out
+    remaining = list(wanted); out = {}
+    for t in aigefs_file_types(run, session):
+        if not remaining:
+            break
+        try:
+            r = session.get(aigefs_url(run, fhr, member, t) + ".idx", timeout=60)
+            if r.status_code != 200:
+                continue
+        except requests.RequestException:
+            continue
+        present = set()
+        for line in r.text.splitlines():
+            parts = line.split(":")
+            if len(parts) > 4:
+                present.add((parts[3], parts[4]))
+        found = [w for w in remaining if w in present]
+        for w in found:
+            _AIGEFS_FIELD_FILE[w] = t
+        if found:
+            out[t] = found
+        remaining = [w for w in remaining if w not in found]
+    if remaining:
+        log.warning("AI-GEFS: fields not found in any file type %s: %s", aigefs_file_types(run, session), remaining)
+    return out
 
 
 def nomads_idx_ranges(idx_url: str, wanted, session, retries: int = 3):
@@ -730,30 +809,37 @@ def nomads_idx_ranges(idx_url: str, wanted, session, retries: int = 3):
 
 
 def download_aigefs_member(run: dt.datetime, fhr: int, member: str, dest: Path, session) -> Path:
+    """Pull the wanted fields for one member/hour from whichever file types hold them."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists() and dest.stat().st_size > 1000:
         return dest
-    url = aigefs_url(run, fhr, member)
     wanted = [(v, l) for v, l in MODEL["idx_fields"] if not (v == "APCP" and fhr == 0)]
-    ranges = nomads_idx_ranges(url + ".idx", wanted, session)
-    if not ranges:
-        raise RuntimeError(f"no wanted fields in {url}.idx")
+    by_type = aigefs_locate_fields(run, fhr, member, wanted, session)
+    if not by_type:
+        raise RuntimeError(f"no wanted fields found for {member} f{fhr:03d}")
     tmp = dest.with_suffix(".part")
     with open(tmp, "wb") as out:
-        for off, ln in sorted(ranges):
-            hdr = {"Range": f"bytes={off}-{off + ln - 1}" if ln else f"bytes={off}-"}
-            for attempt in range(4):
-                try:
-                    r = session.get(url, headers=hdr, timeout=120)
-                    if r.status_code in (200, 206):
-                        out.write(r.content); break
-                    if r.status_code == 404:
-                        raise RuntimeError(f"404 {url}")
-                except requests.RequestException as e:
-                    log.info("range fetch failed (%d): %s", attempt + 1, str(e)[:80])
-                time.sleep(BACKOFF[min(attempt, len(BACKOFF) - 1)])
-            else:
-                tmp.unlink(missing_ok=True); raise RuntimeError(f"range download failed: {url}")
+        for ftype, flds in by_type.items():
+            url = aigefs_url(run, fhr, member, ftype)
+            ranges = nomads_idx_ranges(url + ".idx", flds, session)
+            for off, ln in sorted(ranges):
+                hdr = {"Range": f"bytes={off}-{off + ln - 1}" if ln else f"bytes={off}-"}
+                for attempt in range(4):
+                    if host_dead(url):
+                        raise RuntimeError(f"host unreachable: {url}")
+                    try:
+                        r = session.get(url, headers=hdr, timeout=120)
+                        note_conn_ok(url)
+                        if r.status_code in (200, 206):
+                            out.write(r.content); break
+                        if r.status_code == 404:
+                            raise RuntimeError(f"404 {url}")
+                    except requests.RequestException as e:
+                        note_conn_failure(url)
+                        log.info("range fetch failed (%d): %s", attempt + 1, str(e)[:80])
+                    time.sleep(BACKOFF[min(attempt, len(BACKOFF) - 1)])
+                else:
+                    tmp.unlink(missing_ok=True); raise RuntimeError(f"range download failed: {url}")
     tmp.rename(dest)
     return dest
 
@@ -958,16 +1044,22 @@ def download_geps(run: dt.datetime, step: int, fields, dest: Path, session: requ
             for cand in candidates:
                 token = cand.format(lev=int(lev)) if lev is not None else cand
                 url = GEPS_DIR.format(ymd=ymd, hh=hh, fhr=step) + tm["file"].format(token=token, fhr=step)
-                for attempt in range(4):
+                for attempt in range(3):
+                    if host_dead(url):
+                        break
                     try:
-                        r = session.get(url, timeout=300)
+                        r = session.get(url, timeout=90)
+                        note_conn_ok(url)
                         if r.status_code == 200 and len(r.content) > 500:
                             out.write(r.content); got += 1; done = True; break
                         if r.status_code == 404:
                             break
                     except requests.RequestException as e:
+                        note_conn_failure(url)
                         log.info("GET failed (%d): %s", attempt + 1, str(e)[:80])
                     time.sleep(BACKOFF[min(attempt, len(BACKOFF) - 1)])
+                if host_dead(url):
+                    break
                 if done:
                     break
             if not done:
@@ -1066,8 +1158,11 @@ def download_files(run: dt.datetime, step: int, pairs: set, dest: Path, session:
     with open(raw, "wb") as out:
         for url in urls:
             for attempt in range(retries):
+                if host_dead(url):
+                    break
                 try:
                     r = session.get(url, timeout=60)
+                    note_conn_ok(url)
                     if r.status_code == 200 and len(r.content) > 500:
                         data = bz2.decompress(r.content) if url.endswith(".bz2") else r.content
                         out.write(data); got += 1
@@ -1076,8 +1171,11 @@ def download_files(run: dt.datetime, step: int, pairs: set, dest: Path, session:
                         log.warning("missing: %s", url.rsplit("/", 1)[-1]); break
                     log.warning("GET %s -> %s", url.rsplit("/", 1)[-1], r.status_code)
                 except (requests.RequestException, OSError) as e:
-                    log.warning("GET failed (%d): %s", attempt + 1, e)
+                    note_conn_failure(url)
+                    log.warning("GET failed (%d): %s", attempt + 1, str(e)[:100])
                 time.sleep(BACKOFF[min(attempt, len(BACKOFF) - 1)])
+            if host_dead(url):
+                break
     if got == 0:
         raw.unlink(missing_ok=True)
         raise RuntimeError(f"No fields downloaded for step {step}")

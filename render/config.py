@@ -421,6 +421,19 @@ ENS_PARAMS = {
     "prob_t850frz":  {"name": "Prob. 850 mb temp ≤ 0 °C",     "group": "Probability",   "plot": "prob_t850frz",  "fetch": _ENS_FETCH},
 }
 
+# Cities whose values get printed on the 2 m temperature and 10 m wind maps
+# (only on the Florida / Gulf / Southeast views, where the labels fit).
+LABEL_CITIES = [
+    ("Miami", 25.76, -80.19), ("West Palm Beach", 26.71, -80.05), ("Key West", 24.56, -81.78),
+    ("Naples", 26.14, -81.79), ("Fort Myers", 26.64, -81.87), ("Sarasota", 27.34, -82.53),
+    ("Tampa", 27.95, -82.46), ("Orlando", 28.54, -81.38), ("Daytona Beach", 29.21, -81.02), ("Jacksonville", 30.33, -81.66),
+    ("Tallahassee", 30.44, -84.28), ("Panama City", 30.16, -85.66), ("Pensacola", 30.42, -87.22),
+    ("Mobile", 30.69, -88.04), ("New Orleans", 29.95, -90.07), ("Houston", 29.76, -95.37), ("Corpus Christi", 27.80, -97.40),
+    ("Brownsville", 25.90, -97.50), ("Atlanta", 33.75, -84.39), ("Savannah", 32.08, -81.10), ("Charleston", 32.78, -79.93),
+    ("Nassau", 25.05, -77.35), ("Havana", 23.13, -82.38), ("Cancún", 21.16, -86.85),
+]
+LABEL_REGIONS = {"fl", "gulf", "seast"}
+
 # Output image size (inches × dpi)
 FIG_SIZE = (12, 8)
 DPI = 100
