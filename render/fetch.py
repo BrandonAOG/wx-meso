@@ -306,14 +306,21 @@ def available_pairs(run: dt.datetime, fhr: int, pairs, session) -> set:
             log.info("idx fetch failed (%s); requesting all fields", str(e)[:60]); return set(pairs)
     present = _IDX_CACHE[url]
     norm = lambda t: t.replace(" (considered as a single layer)", "").strip()
-    present_n = {(v, norm(l)) for v, l in present}
+    present_n = {}
+    for v, l in present:
+        present_n.setdefault((v, norm(l)), l)          # normalised -> the model's actual level text
     keep, dropped = set(), []
     for var, lev in pairs:
-        lev_txt = norm(_IDX_LEVEL.get(lev, lev.replace("_", " ")))
-        if (var, lev_txt) in present_n:
+        default_txt = _IDX_LEVEL.get(lev, lev.replace("_", " "))
+        actual = present_n.get((var, norm(default_txt)))
+        if actual is None:
+            dropped.append(f"{var}@{lev}"); continue
+        if actual == default_txt:
             keep.add((var, lev))
         else:
-            dropped.append(f"{var}@{lev}")
+            # the model spells this level differently (e.g. NAM's REFC at "entire atmosphere
+            # (considered as a single layer)"): request it the way its own filter names it
+            keep.add((var, actual.replace(" ", "_").replace("(", "\\(").replace(")", "\\)")))
     if dropped and (fhr, tuple(sorted(dropped))) not in _SKIP_LOGGED:
         _SKIP_LOGGED.add((fhr, tuple(sorted(dropped))))
         if len(_SKIP_LOGGED) <= 6:
