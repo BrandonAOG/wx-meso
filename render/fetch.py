@@ -291,19 +291,30 @@ def available_pairs(run: dt.datetime, fhr: int, pairs, session) -> set:
     if not url:
         return set(pairs)
     if url not in _IDX_CACHE:
-        try:
-            r = session.get(url, timeout=60)
-            if r.status_code != 200:
-                log.info("idx %s -> HTTP %s; requesting all fields", url.rsplit("/", 1)[-1], r.status_code)
-                return set(pairs)
-            present = set()
-            for line in r.text.splitlines():
-                parts = line.split(":")
-                if len(parts) > 4:
-                    present.add((parts[3], parts[4]))
-            _IDX_CACHE[url] = present
-        except requests.RequestException as e:
-            log.info("idx fetch failed (%s); requesting all fields", str(e)[:60]); return set(pairs)
+        present = None
+        for attempt in range(3):
+            try:
+                r = session.get(url, timeout=60)
+                if r.status_code == 200:
+                    present = set()
+                    for line in r.text.splitlines():
+                        parts = line.split(":")
+                        if len(parts) > 4:
+                            present.add((parts[3], parts[4]))
+                    break
+                if r.status_code == 404:
+                    break
+                log.info("idx %s -> HTTP %s", url.rsplit("/", 1)[-1], r.status_code)
+            except requests.RequestException as e:
+                log.info("idx fetch failed (%s)", str(e)[:60])
+            time.sleep(BACKOFF[min(attempt, len(BACKOFF) - 1)])
+        if present is None:
+            if MODEL["source"] == "nomads_grid":
+                # these models' filters reject unknown levels with a 500; without the
+                # index we can't build a safe request, so skip this hour
+                raise RuntimeError(f"f{fhr:03d}: index unavailable ({url.rsplit('/', 1)[-1]}); skipping hour")
+            log.info("idx unavailable; requesting all fields"); return set(pairs)
+        _IDX_CACHE[url] = present
     present = _IDX_CACHE[url]
     norm = lambda t: t.replace(" (considered as a single layer)", "").strip()
     present_n = {}
